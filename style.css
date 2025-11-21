@@ -1312,6 +1312,42 @@ input:focus + .slider {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--spacing-4);
+    flex-wrap: wrap;
+}
+
+.logo-section {
+    display: flex;
+    flex-direction: row;
+    gap: var(--spacing-3);
+    align-items: center;
+}
+
+.logo-img {
+    height: 35px;
+    width: 120px;
+    object-fit: contain;
+    opacity: 0.9;
+    transition: var(--transition-fast);
+}
+
+.logo-img:hover {
+    opacity: 1;
+}
+
+.osu-logo {
+    order: 1;
+}
+
+.ucsc-logo {
+    order: 2;
+}
+
+.footer-text {
+    margin: 0;
+    flex: 1;
+    text-align: center;
+    min-width: 300px;
 }
 
 .footer-links {
@@ -1389,7 +1425,16 @@ input:focus + .slider {
     .footer-content {
         flex-direction: column;
         gap: var(--spacing-4);
+        align-items: center;
+    }
+    
+    .footer-text {
         text-align: center;
+        min-width: auto;
+    }
+    
+    .logo-section {
+        flex-direction: row;
     }
 }
 
@@ -1418,6 +1463,11 @@ input:focus + .slider {
     .rankings-table th,
     .rankings-table td {
         padding: var(--spacing-2) var(--spacing-3);
+    }
+    
+    .logo-img {
+        height: 30px;
+        width: 100px;
     }
 }
 
