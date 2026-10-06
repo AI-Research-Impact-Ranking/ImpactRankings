@@ -1068,7 +1068,9 @@ const COUNTRY_NAME_TO_CODE = {
     'Mali': 'ml', 'Senegal': 'sn', 'Gambia': 'gm', 'Guinea': 'gn', 'Guinea-Bissau': 'gw',
     'Sierra Leone': 'sl', 'Liberia': 'lr', 'Ivory Coast': 'ci', 'Ghana': 'gh', 'Togo': 'tg',
     'Cape Verde': 'cv', 'Macao': 'mo', 'Macau': 'mo',
-    'Argentina': 'ar', 'Brazil': 'br', 'Chile': 'cl', 'Colombia': 'co'
+    'Argentina': 'ar', 'Brazil': 'br', 'Chile': 'cl', 'Colombia': 'co',
+    'Armenia': 'am', 'Ecuador': 'ec', 'Iceland': 'is', 'Serbia': 'rs', 'Uruguay': 'uy',
+    'Mexico': 'mx', 'Peru': 'pe'
 };
 
 function getCountryFlag(country) {

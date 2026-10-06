@@ -11,7 +11,7 @@ Hence, we developed a new ranking system where we analyze research papers from m
 
 For each paper, we ask a large language model (Qwen2.5-7B-Instruct) what are the 5 most important papers to this paper. In other words, the five works that most strongly influence the study. By doing this, we trace which papers and authors are consistently seen as inspirational and foundational to new discoveries in the field.
 
-We ran the model on all papers from top conferences in machine learning, computer vision, natural language processing and information retrieval from 2019 - 2026 (coverage varies by conference).
+We ran the model on all papers from top conferences in artificial intelligence, machine learning, computer vision, natural language processing and information retrieval from 2019 - 2026 (coverage varies by conference).
 
 Next, we map these influential authors to their affiliated universities using the CSrankings name–affiliation database. Each time a paper is recognized as one of the “top five references” in another work, its authors and their institutions receive credit. To keep the scoring fair, points are divided by the number of co-authors, ensuring balanced recognition across collaborations.
 
