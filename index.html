@@ -15,6 +15,7 @@
             <div class="header-main">
                 <h1><i class="fas fa-chart-line"></i> Research Impact Rankings</h1>
                 <p class="header-subtitle">Metrics-based ranking of computer science institutions</p>
+                <p class="header-stamp" id="dataStamp" aria-live="polite"></p>
             </div>
             <div class="header-actions">
                 <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings" class="github-link" target="_blank" rel="noopener noreferrer">
@@ -22,19 +23,39 @@
                 </a>
             </div>
         </div>
+        <nav class="ranking-tabs" role="tablist" aria-label="Rankings">
+            <button type="button" class="ranking-tab active" data-tab="universities" role="tab" aria-selected="true">
+                <i class="fas fa-university"></i> Universities
+            </button>
+            <button type="button" class="ranking-tab" data-tab="companies" role="tab" aria-selected="false">
+                <i class="fas fa-building"></i> Companies
+            </button>
+        </nav>
         <div class="header-description">
-            <p>
-                <span id="shortDescription">
+            <p class="tab-description" data-tab="universities">
+                <span class="description-short">
                     Rankings are measured through the impact that each school's publications have made to the field of computer science.
                 </span>
-                <span id="fullDescription" style="display: none;">
+                <span class="description-full" style="display: none;">
                     <span class="description-paragraph">Rankings are measured through the impact that each school's publications have made to the field of computer science.</span>
                     <span class="description-paragraph">How can we measure quality of the publications? We believe that 1) The quality of research is best measured by peers in the same research area; 2) Careful use of LLMs can reveal the inherent quality measurements that the peers have already given by reading lots of papers. Hence, we developed a new ranking system where we analyze research papers from major AI conferences.</span>
-                    <span class="description-paragraph">For each paper, we ask a large language model (DeepSeek-R1-Distill-Llama-8B) what are the 5 most important papers to this paper. In other words, the five works that most strongly influence the study. By doing this, we trace which papers and authors are consistently seen as foundational to new discoveries.</span>
+                    <span class="description-paragraph">For each paper, we ask a large language model (Qwen2.5-7B-Instruct) what are the 5 most important papers to this paper. In other words, the five works that most strongly influence the study. By doing this, we trace which papers and authors are consistently seen as foundational to new discoveries.</span>
                     <span class="description-paragraph">Next, we map these influential authors to their affiliated universities using the CSrankings name–affiliation database. Each time a paper is recognized as one of the "top five references" in another work, its authors and their institutions receive credit. To keep the scoring fair, points are divided by the number of co-authors, ensuring balanced recognition across collaborations.</span>
-					<span class="description-paragraph">See <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings/blob/main/docs/faq.md">the FAQ </a> and the <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings">GitHub repository</a> for any issues you may have.
+                    <span class="description-paragraph">Scores are computed separately for every conference and year, so the field, conference and year filters re-rank the list from the selected conferences and years alone.</span>
+                    <span class="description-paragraph">See <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings/blob/main/docs/faq.md">the FAQ </a> and the <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings">GitHub repository</a> for any issues you may have.</span>
                 </span>
-                <!-- <a href="#" id="readMoreLink" class="read-more-link" onclick="toggleDescription(event)">read more</a> -->
+            </p>
+            <p class="tab-description" data-tab="companies" style="display: none;">
+                <span class="description-short">
+                    Rankings are measured through the impact that the research produced at each company has made to the field of computer science.
+                </span>
+                <span class="description-full" style="display: none;">
+                    <span class="description-paragraph">Rankings are measured through the impact that the research produced at each company has made to the field of computer science.</span>
+                    <span class="description-paragraph">The method is the same as for universities: for each paper, we ask a large language model (Qwen2.5-7B-Instruct) what are the 5 most important papers to this paper, and the authors of those five works share the credit.</span>
+                    <span class="description-paragraph">Credit stays with the organization where the work was done. Affiliations are read from the cited paper as it was published, so a paper written at Google keeps counting for Google after its authors move on. This differs from the university ranking, which credits the school where each author works now, so the two lists are not directly comparable. Research labs inside a company count for that company: DeepMind and Google Research for Google, Microsoft Research for Microsoft, Meta AI for Meta.</span>
+                    <span class="description-paragraph">Known limitations: affiliations can only be checked against the paper itself when a free copy exists, which mostly means papers from about 2015 onwards, so older work rests on publisher metadata alone. Non-profit and government research institutes are not listed here. Outside roughly the top 50, scores are very close together and a difference of a few places is not meaningful.</span>
+                    <span class="description-paragraph">See <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings/blob/main/docs/faq.md">the FAQ </a> and the <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings">GitHub repository</a> for any issues you may have.</span>
+                </span>
             </p>
             <a href="#" id="readMoreLink" class="read-more-link" onclick="toggleDescription(event)">read more</a>
         </div>
@@ -42,6 +63,36 @@
     <main>
         <div class="content">
             <div class="filter-sidebar">
+                <div class="filter-section">
+                    <h3><i class="fas fa-calendar-alt"></i> Conference Years</h3>
+
+                    <div class="filter-group">
+                        <div class="year-range">
+                            <select id="yearFrom" class="filter-select" aria-label="From year"></select>
+                            <span class="year-range-separator">to</span>
+                            <select id="yearTo" class="filter-select" aria-label="To year"></select>
+                        </div>
+                        <p class="filter-hint">Counts only the papers published at the selected conferences in these years.</p>
+                    </div>
+                </div>
+                <div class="filter-section">
+                    <h3><i class="fas fa-microscope"></i> Research Fields</h3>
+                    
+                    <div class="filter-group">
+                        <div class="filter-header">
+                            <label class="filter-label">
+                                <i class="fas fa-list"></i> Fields
+                            </label>
+                            <button id="toggleAllFields" class="toggle-button-small" onclick="toggleAllFields()">
+                                All
+                            </button>
+                        </div>
+                        <div class="field-checkboxes" id="fieldCheckboxContainer">
+                            <!-- Checkboxes will be dynamically generated here -->
+                        </div>
+                    </div>
+                </div>
+
                 <div class="filter-section">
                     <h3><i class="fas fa-globe"></i> Geographic Filters</h3>
                     
@@ -70,32 +121,15 @@
                     </div>
                 </div>
 
-                <div class="filter-section">
-                    <h3><i class="fas fa-microscope"></i> Research Fields</h3>
-                    
-                    <div class="filter-group">
-                        <div class="filter-header">
-                            <label class="filter-label">
-                                <i class="fas fa-list"></i> Fields
-                            </label>
-                            <button id="toggleAllFields" class="toggle-button-small" onclick="toggleAllFields()">
-                                All
-                            </button>
-                        </div>
-                        <div class="field-checkboxes" id="fieldCheckboxContainer">
-                            <!-- Checkboxes will be dynamically generated here -->
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <div class="results-container">
                 <div class="results-header">
                     <div class="results-stats">
                         <div class="stat-item">
-                            <i class="fas fa-university"></i>
+                            <i class="fas fa-university" id="entityStatIcon"></i>
                             <span id="totalUniversities">0</span>
-                            <label>Universities</label>
+                            <label id="entityStatLabel">Universities</label>
                         </div>
                         <div class="stat-item">
                             <i class="fas fa-users"></i>
@@ -109,6 +143,7 @@
                         </div>
                     </div>
                     <div class="results-actions">
+                        <input type="search" id="searchInput" class="search-input" placeholder="Search universities or faculty" aria-label="Search" autocomplete="off">
                         <button class="export-btn" onclick="exportData()">
                             Export CSV
                         </button>
@@ -125,8 +160,8 @@
                         <thead>
                             <tr>
                                 <th class="rank-col">Rank</th>
-                                <th class="institution-col">Institution</th>
-                                <th class="score-col">Impact Score</th>
+                                <th class="institution-col" id="institutionHeader">Institution</th>
+                                <th class="score-col">Impact Score <i class="fas fa-info-circle score-info" title="Sum of the five field scores; each field is scaled to total 500 across the tab."></i></th>
                             </tr>
                         </thead>
                         <tbody>

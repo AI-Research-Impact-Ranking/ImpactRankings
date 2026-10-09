@@ -904,8 +904,33 @@ input:focus + .slider {
     background: var(--gray-100);
     border-radius: var(--radius-sm);
     overflow: visible;
-    margin-right: 60px; /* Reduced space for value */
+    margin-right: 0;
     border: 1px solid var(--gray-200);
+}
+
+.chart-caption {
+    margin: 0 0 var(--spacing-1) 0;
+    font-size: 10px;
+    color: var(--gray-600);
+}
+
+.chart-bar-share {
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--gray-800);
+    pointer-events: none;
+}
+
+.chart-bar-rank {
+    min-width: 92px;
+    font-size: 10px;
+    color: var(--gray-700);
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 .chart-bar-container::before {
@@ -935,10 +960,6 @@ input:focus + .slider {
 }
 
 .chart-bar-value {
-    position: absolute;
-    right: -65px;
-    top: 50%;
-    transform: translateY(-50%);
     font-size: 9px;
     color: var(--gray-700);
     font-weight: 600;
@@ -1497,4 +1518,249 @@ input:focus + .slider {
         opacity: 1;
         transform: translateY(0);
     }
+}
+/* Ranking Tabs */
+.ranking-tabs {
+    max-width: 1200px;
+    margin: var(--spacing-3) auto -1px;
+    padding: 0 var(--spacing-6);
+    display: flex;
+    gap: var(--spacing-1);
+}
+
+.ranking-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-2);
+    padding: var(--spacing-2) var(--spacing-4);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--gray-600);
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+
+.ranking-tab:hover {
+    color: var(--primary-color);
+}
+
+.ranking-tab.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+    font-weight: 600;
+}
+
+/* Conferences nested under each field */
+.field-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-1);
+}
+
+.field-caret {
+    width: 14px;
+    flex-shrink: 0;
+    text-align: center;
+    font-size: 9px;
+    color: var(--gray-400);
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+    transition: var(--transition-fast);
+}
+
+.field-caret:hover {
+    color: var(--primary-color);
+}
+
+.field-caret.expanded {
+    transform: rotate(90deg);
+}
+
+.checkbox-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-2);
+    font-size: var(--font-size-sm);
+    color: var(--gray-700);
+    cursor: pointer;
+}
+
+.checkbox-item .field-checkbox {
+    flex-shrink: 0;
+}
+
+.conference-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: var(--spacing-1) 0 var(--spacing-2) 38px;
+}
+
+.conference-list[hidden] {
+    display: none;
+}
+
+.conference-item {
+    font-size: var(--font-size-xs);
+}
+
+.conference-item .field-checkbox {
+    width: 14px;
+    height: 14px;
+}
+
+.conference-years {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--gray-400);
+}
+
+/* Conference year range */
+.year-range {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-2);
+}
+
+.year-range-separator {
+    font-size: var(--font-size-xs);
+    color: var(--gray-500);
+}
+
+.filter-hint {
+    margin-top: var(--spacing-2);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--gray-500);
+}
+
+/* Company details: papers above the author table */
+.papers-section {
+    margin-bottom: var(--spacing-4);
+}
+
+.paper-list {
+    margin: var(--spacing-2) 0 0 var(--spacing-6);
+    font-size: var(--font-size-xs);
+    color: var(--gray-600);
+}
+
+.paper-list li {
+    padding: 2px 0;
+}
+
+.paper-title {
+    color: var(--gray-800);
+    font-weight: 500;
+    text-decoration: none;
+}
+
+.paper-title:hover {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
+
+.paper-meta {
+    margin-left: var(--spacing-2);
+    color: var(--gray-500);
+    white-space: nowrap;
+}
+
+.details-note {
+    padding: var(--spacing-2) 0;
+    font-size: var(--font-size-xs);
+    color: var(--gray-500);
+}
+
+.show-all-people {
+    margin-top: var(--spacing-2);
+    padding: var(--spacing-1) var(--spacing-3);
+    background: var(--gray-100);
+    color: var(--gray-700);
+    border: 1px solid var(--gray-300);
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+
+.show-all-people:hover {
+    background: var(--gray-200);
+    color: var(--primary-color);
+}
+
+/* Search */
+.search-input {
+    width: 240px;
+    padding: var(--spacing-2) var(--spacing-3);
+    border: 1px solid var(--gray-300);
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: var(--font-size-xs);
+    color: var(--gray-700);
+    background: white;
+    transition: var(--transition-fast);
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 1px var(--primary-color);
+}
+
+.search-match {
+    font-size: 11px;
+    color: var(--gray-500);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.search-match::before {
+    content: 'matches ';
+    color: var(--gray-400);
+}
+
+.faculty-row.search-hit .faculty-name {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.rankings-table td.empty-row {
+    padding: var(--spacing-8);
+    text-align: center;
+    color: var(--gray-500);
+}
+
+@media (max-width: 768px) {
+    .ranking-tabs {
+        justify-content: center;
+    }
+
+    .search-input {
+        flex: 1;
+        width: auto;
+        min-width: 0;
+    }
+}
+
+.score-info {
+    margin-left: 3px;
+    font-size: 10px;
+    color: var(--gray-400);
+    cursor: help;
+    vertical-align: baseline;
+}
+
+.header-stamp {
+    margin: 4px 0 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--gray-500);
 }

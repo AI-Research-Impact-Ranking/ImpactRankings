@@ -9,11 +9,13 @@ How can we measure the quality of the publications? We believe that 1) The quali
 
 Hence, we developed a new ranking system where we analyze research papers from major AI conferences. 
 
-For each paper, we ask a large language model (DeepSeek-R1-Distill-Llama-8B) what are the 5 most important papers to this paper. In other words, the five works that most strongly influence the study. By doing this, we trace which papers and authors are consistently seen as inspirational and foundational to new discoveries in the field.
+For each paper, we ask a large language model (Qwen2.5-7B-Instruct) what are the 5 most important papers to this paper. In other words, the five works that most strongly influence the study. By doing this, we trace which papers and authors are consistently seen as inspirational and foundational to new discoveries in the field.
 
-We ran the model on all papers from top conferences in machine learning, computer vision, natural language processing and information retrieval from 2020 - 2025.
+We ran the model on all papers from top conferences in artificial intelligence, machine learning, computer vision, natural language processing and information retrieval from 2019 - 2026 (coverage varies by conference).
 
 Next, we map these influential authors to their affiliated universities using the CSrankings name–affiliation database. Each time a paper is recognized as one of the “top five references” in another work, its authors and their institutions receive credit. To keep the scoring fair, points are divided by the number of co-authors, ensuring balanced recognition across collaborations.
+
+We also rank companies in the same way. There, credit stays with the organization where the work was done: affiliations are read from the cited paper as it was published, so a paper keeps counting for the company that produced it after its authors move on.
 
 The result is a new kind of academic ranking: one that rewards universities not just for publishing often, but for producing research that endures, inspires, and drives the field forward. This approach highlights scholarly influence and provides students, researchers, and institutions with a clearer picture of where the most impactful work is happening.
 

@@ -1,210 +1,441 @@
-let data = [];
-let facultyData = [];
-let categories = [];
-let selectedRegion = 'all';
-let lastFiltered = [];
-let selectedCountry = 'all';
-let expandedRows = new Set();
-let facultyFieldStats = {};
-let RENDERED_FIELDS = [];
-
-const ACTIVE_FIELDS = [
-    "Machine Learning",
-    "Computer Vision & Image Processing",
-    "Natural Language Processing",
-    "The Web & Information Retrieval",
-];
-
-const DISPLAY_LABELS = {
-    'Machine Learning': 'Machine Learning',
-    'Computer Vision & Image Processing': 'Computer Vision & Image Processing',
-    'Natural Language Processing': 'Natural Language Processing',
-    'The Web & Information Retrieval': 'The Web & Information Retrieval'
+// Each tab is one ranking, read from two CSV files in data/:
+//   rankingFile  one row per institution: name, country, continent, then one score column per
+//                conference/year group (e.g. ACL_2021); an empty cell is zero
+//   peopleFile   one row per (person, institution) with the same group columns
+// An institution's score under any conference/year selection is the sum of the selected group
+// columns, so the conference and year filters re-rank exactly instead of approximating.
+const TABS = {
+    universities: {
+        rankingFile: 'data/university_ranking.csv',
+        peopleFile: 'data/university_faculty.csv',
+        entityCol: 'University',
+        personCol: 'Faculty Name',
+        statLabel: 'Universities',
+        statIcon: 'fa-university',
+        columnLabel: 'Institution',
+        peopleLabel: 'Faculty Members',
+        personLabel: 'Faculty Name',
+        emptyPeople: 'No faculty data available for the selected fields.',
+        exportName: 'ai-rankings',
+        searchPlaceholder: 'Search universities or faculty',
+        papersFile: null
+    },
+    companies: {
+        rankingFile: 'data/company_ranking.csv',
+        peopleFile: 'data/company_authors.csv',
+        entityCol: 'Company',
+        personCol: 'Author',
+        statLabel: 'Companies',
+        statIcon: 'fa-building',
+        columnLabel: 'Company',
+        peopleLabel: 'Authors',
+        personLabel: 'Author',
+        emptyPeople: 'No author data available for the selected fields.',
+        exportName: 'ai-company-rankings',
+        searchPlaceholder: 'Search companies or authors',
+        papersFile: 'data/company_papers.json'   // {company: [{title, year, cites: {group: n}}]}
+    }
 };
+const DEFAULT_TAB = 'universities';
 
 const EPS = 1e-9;
-// const NORMALIZE = 'unit-variance';
-// const NORMALIZE = 'mean-based';
-const NORMALIZE = 'target-sum'; 
-const FIELD_TARGET_TOTAL = 500; 
-let fieldStats = {};
+// Every field is rescaled so its scores sum to this across the institutions of a tab, which
+// keeps a field with many conference/year groups from outweighing the others.
+const FIELD_TARGET_TOTAL = 500;
+const TOP_PAPERS = 10;
+const PEOPLE_PAGE = 100;
+
+let conferences = [];          // [{id, name, field}] from data/conferences.csv
+let fields = [];               // field names, in display order
+let datasets = {};             // tab -> Promise of its loaded dataset
+let data = null;               // dataset of the tab on screen
+let currentTab = DEFAULT_TAB;
+let selectedConferences = new Set();
+let expandedFields = new Set();
+let yearFrom = null;           // null = no lower / upper bound
+let yearTo = null;
+let selectedRegion = 'all';
+let selectedCountry = 'all';
+let searchQuery = '';          // normalized text of the search box
+let lastRanked = [];           // every row the filters keep, ranked
+let lastFiltered = [];         // the rows on screen: lastRanked narrowed by the search
+let expandedRows = new Set();
+let descriptionExpanded = false;
+
+function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quoted) {
+            if (ch !== '"') {
+                cell += ch;
+            } else if (text[i + 1] === '"') {
+                cell += '"';
+                i++;
+            } else {
+                quoted = false;
+            }
+        } else if (ch === '"') {
+            quoted = true;
+        } else if (ch === ',') {
+            row.push(cell);
+            cell = '';
+        } else if (ch === '\n') {
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = '';
+        } else if (ch !== '\r') {
+            cell += ch;
+        }
+    }
+    if (cell !== '' || row.length) {
+        row.push(cell);
+        rows.push(row);
+    }
+    return rows;
+}
+
+async function loadDataStamp() {
+    // data/meta.json is written by the export alongside the CSVs: when, and how much.
+    const el = document.getElementById('dataStamp');
+    if (!el) return;
+    try {
+        const meta = await (await fetch('data/meta.json')).json();
+        const when = new Date(meta.updated + 'T00:00:00Z')
+            .toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+        el.textContent = `Data as of ${when} · ${Number(meta.ranked_papers).toLocaleString()} papers ranked · `
+            + `${meta.conferences} conferences · ${Number(meta.schools).toLocaleString()} schools · `
+            + `${Number(meta.companies).toLocaleString()} companies`;
+    } catch (error) {
+        el.textContent = '';
+    }
+}
 
 async function loadCSV(filePath) {
     const response = await fetch(filePath);
-    const csvText = await response.text();
-    
-    const rows = csvText.trim().split('\n');
-    const headers = rows.shift().split(',');
+    if (!response.ok) throw new Error(`${filePath}: ${response.status}`);
+    const rows = parseCSV(await response.text());
+    const headers = rows.shift().map(h => h.trim());
+    return { headers, rows };
+}
 
-    return rows.map(row => {
-        const rowData = row.split(',');
-        return headers.reduce((obj, header, index) => {
-            obj[header.trim()] = rowData[index]?.trim() || '';
-            return obj;
-        }, {});
-    });
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, ch => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+    ));
 }
 
 async function initialize() {
-    // data = await loadCSV('3_f_1.csv');
-    // facultyData = await loadCSV('3_faculty_score.csv');
-    data = await loadCSV('4_f_log_ranking.csv');
-    facultyData = await loadCSV('4_faculty_logscore.csv');
-
-    // Extract categories dynamically
-    if (data.length > 0) {
-        const columns = Object.keys(data[0]);
-        categories = columns.slice(2); // Assume categories start at index 2
-    }
-
-    renderFieldCheckboxes();
+    setupTabs();
     setupFieldFilter();
-    computeFieldStats();
-    // computeFacultyFieldStats();
+    setupYearFilter();
     setupRegionFilter();
     setupCountryFilter();
+    setupSearch();
+    setupTableEvents();
+
+    loadDataStamp();
+
+    try {
+        const table = await loadCSV('data/conferences.csv');
+        const col = name => table.headers.indexOf(name);
+        conferences = table.rows.map(r => ({
+            id: r[col('Conference')],
+            name: r[col('Name')] || r[col('Conference')],
+            field: r[col('Category')]
+        }));
+        fields = Array.from(new Set(conferences.map(c => c.field)))
+            .sort((x, y) => getFieldDisplayName(x).localeCompare(getFieldDisplayName(y)));
+        selectedConferences = new Set(conferences.map(c => c.id));
+    } catch (error) {
+        showLoadError(error);
+        return;
+    }
+    switchTab(tabFromHash());
+}
+
+function tabFromHash() {
+    const name = window.location.hash.replace('#', '');
+    return TABS[name] ? name : DEFAULT_TAB;
+}
+
+function setupTabs() {
+    document.querySelectorAll('.ranking-tab').forEach(button => {
+        button.addEventListener('click', () => {
+            if (button.dataset.tab === currentTab && data) return;
+            history.replaceState(null, '', button.dataset.tab === DEFAULT_TAB
+                ? window.location.pathname : '#' + button.dataset.tab);
+            switchTab(button.dataset.tab);
+        });
+    });
+    window.addEventListener('hashchange', () => {
+        if (tabFromHash() !== currentTab) switchTab(tabFromHash());
+    });
+}
+
+async function switchTab(tab) {
+    const config = TABS[tab];
+    currentTab = tab;
+    data = null;
+    lastRanked = [];
+    lastFiltered = [];
+    expandedRows.clear();
+    selectedRegion = 'all';
+    selectedCountry = 'all';
+    document.getElementById('regionFilter').value = 'all';
+    searchQuery = '';
+    document.getElementById('searchInput').value = '';
+    document.getElementById('searchInput').placeholder = config.searchPlaceholder;
+
+    document.querySelectorAll('.ranking-tab').forEach(button => {
+        const active = button.dataset.tab === tab;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    document.getElementById('entityStatLabel').textContent = config.statLabel;
+    document.getElementById('entityStatIcon').className = 'fas ' + config.statIcon;
+    document.getElementById('institutionHeader').textContent = config.columnLabel;
+    updateDescription();
+
+    document.querySelector('#rankingTable tbody').innerHTML = '';
+    showLoadingSpinner();
+    let dataset;
+    try {
+        dataset = await loadDataset(tab);
+    } catch (error) {
+        if (currentTab === tab) showLoadError(error);
+        return;
+    }
+    if (currentTab !== tab) return;   // another tab was opened while this one loaded
+    data = dataset;
+
+    renderFieldCheckboxes();
+    refreshYearOptions();
+    refreshCountryFilterOptions();
     displayRankings();
 }
 
-function allowedFields() {
-    const headers = data.length ? Object.keys(data[0]) : [];
-    return ACTIVE_FIELDS.filter(f => headers.includes(f));
-  }
-  
+function loadDataset(tab) {
+    if (!datasets[tab]) {
+        datasets[tab] = buildDataset(TABS[tab]);
+        datasets[tab].catch(() => { delete datasets[tab]; });
+    }
+    return datasets[tab];
+}
+
+function parseGroup(header) {
+    const match = /^(.+)_(\d{4})$/.exec(header);
+    const conference = match && conferences.find(c => c.id === match[1]);
+    if (!conference) return null;
+    return { key: header, conference: conference.id, field: conference.field, year: Number(match[2]) };
+}
+
+async function buildDataset(config) {
+    const { headers, rows } = await loadCSV(config.rankingFile);
+    const groups = [];
+    const groupCols = [];
+    headers.forEach((header, index) => {
+        const group = parseGroup(header);
+        if (group) {
+            groups.push(group);
+            groupCols.push(index);
+        }
+    });
+    const col = name => headers.indexOf(name);
+    const nameCol = col(config.entityCol);
+    const entities = rows.filter(r => r[nameCol]).map(r => ({
+        name: r[nameCol],
+        key: searchKey(r[nameCol]),
+        country: (r[col('Country')] || 'Unknown').trim(),
+        continent: (r[col('Continent')] || 'Unknown').trim(),
+        scores: groupCols.map(index => parseFloat(r[index]) || 0)
+    }));
+
+    const dataset = {
+        config,
+        groups,
+        entities,
+        byName: new Map(entities.map(e => [e.name, e])),
+        people: null,          // Map(institution -> [{name, entries: [[groupIndex, score]]}])
+        papers: null           // Promise of {institution: [paper]}, started when a row is first opened
+    };
+    computeFieldStats(dataset);
+
+    // The people file is several times the size of the ranking, so the table is shown first.
+    dataset.peopleReady = loadPeople(dataset)
+        .then(() => { if (data === dataset && lastRanked.length) applySearch(); })
+        .catch(error => { console.error(error); });
+    return dataset;
+}
+
+async function loadPeople(dataset) {
+    const { headers, rows } = await loadCSV(dataset.config.peopleFile);
+    const indexByKey = new Map(dataset.groups.map((g, i) => [g.key, i]));
+    const groupCols = [];
+    headers.forEach((header, index) => {
+        if (indexByKey.has(header)) groupCols.push([index, indexByKey.get(header)]);
+    });
+    const personCol = headers.indexOf(dataset.config.personCol);
+    const entityCol = headers.indexOf(dataset.config.entityCol);
+
+    const people = new Map();
+    rows.forEach(r => {
+        const entries = [];
+        groupCols.forEach(([index, groupIndex]) => {
+            const score = parseFloat(r[index]);
+            if (score > 0) entries.push([groupIndex, score]);
+        });
+        if (!r[personCol] || !entries.length) return;
+        if (!people.has(r[entityCol])) people.set(r[entityCol], []);
+        people.get(r[entityCol]).push({
+            name: r[personCol],
+            key: searchKey(displayName(r[personCol])),
+            entries
+        });
+    });
+    dataset.people = people;
+}
+
+function computeFieldStats(dataset) {
+    const sums = {};
+    fields.forEach(field => { sums[field] = 0; });
+    dataset.entities.forEach(entity => {
+        entity.scores.forEach((score, i) => { sums[dataset.groups[i].field] += score; });
+    });
+    dataset.fieldScale = {};
+    fields.forEach(field => {
+        dataset.fieldScale[field] = sums[field] > EPS ? FIELD_TARGET_TOTAL / sums[field] : 0;
+    });
+    dataset.groupScale = dataset.groups.map(g => dataset.fieldScale[g.field]);
+}
+
+// ---------------------------------------------------------------------------
+// Filters
+// ---------------------------------------------------------------------------
+
+function conferencesOf(field) {
+    const present = new Set(data ? data.groups.map(g => g.conference) : []);
+    return conferences.filter(c => c.field === field && present.has(c.id));
+}
+
+function renderedConferences() {
+    return fields.flatMap(conferencesOf);
+}
+
+function yearsOf(conferenceId) {
+    return data.groups.filter(g => g.conference === conferenceId).map(g => g.year).sort((a, b) => a - b);
+}
 
 function renderFieldCheckboxes() {
     const container = document.getElementById('fieldCheckboxContainer');
-    const headers = data.length ? Object.keys(data[0]) : [];
-
-    RENDERED_FIELDS = ACTIVE_FIELDS.filter(f => headers.includes(f));
-
-    container.innerHTML = RENDERED_FIELDS.map(f => {
-        const id = toId(f);
-        const label = DISPLAY_LABELS[f] || f;
+    container.innerHTML = fields.filter(f => conferencesOf(f).length).map(field => {
+        const expanded = expandedFields.has(field);
+        const items = conferencesOf(field).map(conference => {
+            const years = yearsOf(conference.id);
+            const span = years[0] === years[years.length - 1]
+                ? String(years[0]) : `${years[0]}–${years[years.length - 1]}`;
+            return `
+                <label class="checkbox-item conference-item" title="${escapeHtml(conference.name)}: ${years.join(', ')}">
+                    <input type="checkbox" class="field-checkbox conference-checkbox" data-conference="${escapeHtml(conference.id)}">
+                    <span>${escapeHtml(conference.name)}</span>
+                    <span class="conference-years">${span}</span>
+                </label>
+            `;
+        }).join('');
         return `
-            <label class="checkbox-item" for="${id}">
-                <input type="checkbox" id="${id}" class="field-checkbox" data-field="${f}" checked>
-                <span>${label}</span>
-            </label>
+            <div class="field-group" data-field="${escapeHtml(field)}">
+                <div class="field-row">
+                    <span class="field-caret${expanded ? ' expanded' : ''}" role="button" tabindex="0"
+                          aria-expanded="${expanded}" title="Show conferences">▶</span>
+                    <label class="checkbox-item" for="${toId(field)}">
+                        <input type="checkbox" id="${toId(field)}" class="field-checkbox area-checkbox" data-field="${escapeHtml(field)}">
+                        <span>${escapeHtml(field)}</span>
+                    </label>
+                </div>
+                <div class="conference-list"${expanded ? '' : ' hidden'}>${items}</div>
+            </div>
         `;
     }).join('');
-
-    if (RENDERED_FIELDS.length === 0) {
-        console.warn('None of ACTIVE_FIELDS exist in CSV headers:', ACTIVE_FIELDS);
-    }
+    syncFieldCheckboxes();
 }
 
-function setupCountryFilter() {
-    const sel = document.getElementById('countryFilter');
-    sel.addEventListener('change', () => {
-        selectedCountry = sel.value;
-        resetPageAndDisplayRankings();
+// Checkbox state follows selectedConferences: a field is checked when all of its conferences
+// are, and shown as partial when only some are.
+function syncFieldCheckboxes() {
+    document.querySelectorAll('.conference-checkbox').forEach(box => {
+        box.checked = selectedConferences.has(box.dataset.conference);
     });
-    refreshCountryFilterOptions();
-}
-
-function refreshCountryFilterOptions() {
-    const sel = document.getElementById('countryFilter');
-    
-    // Get filtered data based on current region
-    const filteredData = selectedRegion === 'all'
-        ? data
-        : data.filter(r => r.Continent?.trim().toLowerCase() === selectedRegion.toLowerCase());
-    
-    // Extract unique countries from filtered data
-    const countries = Array.from(new Set(
-        filteredData
-            .map(r => r.Country?.trim())
-            .filter(s => s && s.toLowerCase() !== 'unknown')
-    )).sort((a, b) => a.localeCompare(b));
-
-    const currentCountry = selectedCountry;
-    
-    // Rebuild dropdown options
-    sel.innerHTML = '<option value="all">All Countries</option>' +
-        countries.map(c => `<option value="${c}">${c}</option>`).join('');
-    
-    // Reset country selection if it's no longer available
-    if (currentCountry !== 'all' && !countries.includes(currentCountry)) {
-        selectedCountry = 'all';
-    }
-    sel.value = selectedCountry;
-}
-
-function computeFieldStats() {
-    fieldStats = {};
-    // const cols = (categories && categories.length) ? categories : ACTIVE_FIELDS;
-    // const cols = allowedFields();
-    const cols = RENDERED_FIELDS.length ? RENDERED_FIELDS : ACTIVE_FIELDS;
-    // const cols = ACTIVE_FIELDS;
-    cols.forEach(cat => {
-        const vals = data
-            .map(r => parseFloat(r[cat]))
-            .filter(v => !isNaN(v) && v > 0);
-        const n   = vals.length;
-        const sum = n ? vals.reduce((a, b) => a + b, 0) : 0;
-        const mean = n ? sum / n : 0;
-        // const varSample = n>1 ? vals.reduce((a,b)=>a+(b-mean)*(b-mean),0)/(n-1) : 0;
-        // const std = Math.sqrt(varSample);
-        // fieldStats[cat] = { mean, std };
-        // fieldStats[cat] = { mean };
-        const scale = sum > EPS ? (FIELD_TARGET_TOTAL / sum) : 0;
-        fieldStats[cat] = { mean, count: n, sum, scale };
+    document.querySelectorAll('.area-checkbox').forEach(box => {
+        const ids = conferencesOf(box.dataset.field).map(c => c.id);
+        const picked = ids.filter(id => selectedConferences.has(id)).length;
+        box.checked = picked === ids.length;
+        box.indeterminate = picked > 0 && picked < ids.length;
     });
-}
-
-function normalizeFieldValue(raw, field) {
-    if (!(raw > 0)) return 0;
-    const stats = fieldStats[field] || {};
-
-    if (NORMALIZE === 'target-sum') {
-        const scale = (stats.scale > EPS) ? stats.scale : 0;
-        return raw * scale;
-    } else if (NORMALIZE === 'unit-variance') {
-        const std = (stats.std > EPS) ? stats.std : 1;
-        return raw / std;
-    } else {
-        const mean = (stats.mean > EPS) ? stats.mean : 1;
-        return raw / mean;
-    }
+    updateToggleAllFieldsButton();
 }
 
 function setupFieldFilter() {
-    // Add event listeners to all field checkboxes
-    const checkboxes = document.querySelectorAll('.field-checkbox');
-
-    const anyChecked = Array.from(checkboxes).some(cb => cb.checked);
-    if (!anyChecked) {
-        checkboxes.forEach(checkbox => {
-            checkbox.checked = true;
-        });
-    }
-    checkboxes.forEach(checkbox => {
-        checkbox.addEventListener('change', () => {
-            updateToggleAllFieldsButton();
-            resetPageAndDisplayRankings();
-        });
+    const container = document.getElementById('fieldCheckboxContainer');
+    container.addEventListener('change', event => {
+        const box = event.target;
+        if (box.classList.contains('conference-checkbox')) {
+            if (box.checked) selectedConferences.add(box.dataset.conference);
+            else selectedConferences.delete(box.dataset.conference);
+        } else if (box.classList.contains('area-checkbox')) {
+            conferencesOf(box.dataset.field).forEach(c => {
+                if (box.checked) selectedConferences.add(c.id);
+                else selectedConferences.delete(c.id);
+            });
+        } else {
+            return;
+        }
+        syncFieldCheckboxes();
+        resetPageAndDisplayRankings();
     });
-    updateToggleAllFieldsButton();
+
+    const toggleField = caret => {
+        const group = caret.closest('.field-group');
+        const field = group.dataset.field;
+        const expanded = !expandedFields.has(field);
+        if (expanded) expandedFields.add(field);
+        else expandedFields.delete(field);
+        caret.classList.toggle('expanded', expanded);
+        caret.setAttribute('aria-expanded', String(expanded));
+        group.querySelector('.conference-list').hidden = !expanded;
+    };
+    container.addEventListener('click', event => {
+        const caret = event.target.closest('.field-caret');
+        if (caret) toggleField(caret);
+    });
+    container.addEventListener('keydown', event => {
+        const caret = event.target.closest('.field-caret');
+        if (caret && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            toggleField(caret);
+        }
+    });
 }
 
 function toggleAllFields() {
-    const checkboxes = document.querySelectorAll('.field-checkbox');
-    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-    
-    checkboxes.forEach(checkbox => {
-        checkbox.checked = !allChecked;
+    const shown = renderedConferences().map(c => c.id);
+    const allChecked = shown.every(id => selectedConferences.has(id));
+    shown.forEach(id => {
+        if (allChecked) selectedConferences.delete(id);
+        else selectedConferences.add(id);
     });
-    
-    updateToggleAllFieldsButton();
+    syncFieldCheckboxes();
     resetPageAndDisplayRankings();
 }
 
 function updateToggleAllFieldsButton() {
-    const checkboxes = document.querySelectorAll('.field-checkbox');
-    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+    const shown = renderedConferences();
+    const allChecked = shown.length > 0 && shown.every(c => selectedConferences.has(c.id));
     const button = document.getElementById('toggleAllFields');
-    
+
     if (button) {
         button.textContent = allChecked ? 'None' : 'All';
     }
@@ -214,11 +445,74 @@ function toId(name) {
     return 'field-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 }
 
-function updateToggleAllButtonLabel() {
-    const boxes = document.querySelectorAll('.field-checkbox');
-    const allChecked = Array.from(boxes).every(b => b.checked);
-    const btn = document.getElementById('toggleAll');
-    if (btn) btn.textContent = allChecked ? 'Deselect All' : 'Select All';
+function availableYears() {
+    return Array.from(new Set(data.groups.map(g => g.year))).sort((a, b) => a - b);
+}
+
+function setupYearFilter() {
+    const from = document.getElementById('yearFrom');
+    const to = document.getElementById('yearTo');
+    from.addEventListener('change', () => {
+        yearFrom = Number(from.value);
+        if (yearTo !== null && yearTo < yearFrom) yearTo = yearFrom;
+        refreshYearOptions();
+        resetPageAndDisplayRankings();
+    });
+    to.addEventListener('change', () => {
+        yearTo = Number(to.value);
+        if (yearFrom !== null && yearFrom > yearTo) yearFrom = yearTo;
+        refreshYearOptions();
+        resetPageAndDisplayRankings();
+    });
+}
+
+function refreshYearOptions() {
+    const years = availableYears();
+    const options = years.map(y => `<option value="${y}">${y}</option>`).join('');
+    const from = document.getElementById('yearFrom');
+    const to = document.getElementById('yearTo');
+    from.innerHTML = options;
+    to.innerHTML = options;
+    // A bound left at the edge of the data stays "unbounded", so it follows the data if a
+    // tab covers a different span of years.
+    if (yearFrom !== null && yearFrom <= years[0]) yearFrom = null;
+    if (yearTo !== null && yearTo >= years[years.length - 1]) yearTo = null;
+    from.value = yearFrom === null ? years[0] : yearFrom;
+    to.value = yearTo === null ? years[years.length - 1] : yearTo;
+}
+
+function setupCountryFilter() {
+    const sel = document.getElementById('countryFilter');
+    sel.addEventListener('change', () => {
+        selectedCountry = sel.value;
+        resetPageAndDisplayRankings();
+    });
+}
+
+function refreshCountryFilterOptions() {
+    const sel = document.getElementById('countryFilter');
+
+    // Get filtered data based on current region
+    const filteredData = selectedRegion === 'all'
+        ? data.entities
+        : data.entities.filter(e => e.continent.toLowerCase() === selectedRegion.toLowerCase());
+
+    // Extract unique countries from filtered data
+    const countries = Array.from(new Set(
+        filteredData
+            .map(e => e.country)
+            .filter(s => s && s.toLowerCase() !== 'unknown')
+    )).sort((a, b) => a.localeCompare(b));
+
+    // Rebuild dropdown options
+    sel.innerHTML = '<option value="all">All Countries</option>' +
+        countries.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+
+    // Reset country selection if it's no longer available
+    if (selectedCountry !== 'all' && !countries.includes(selectedCountry)) {
+        selectedCountry = 'all';
+    }
+    sel.value = selectedCountry;
 }
 
 function setupRegionFilter() {
@@ -231,354 +525,313 @@ function setupRegionFilter() {
 }
 
 function resetPageAndDisplayRankings() {
-    selectedRegion = document.getElementById('regionFilter').value;
+    if (!data) return;
     expandedRows.clear(); // Clear expanded rows when filters change
     displayRankings();
 }
 
-function getSelectedCategories() {
-    const picked = [...document.querySelectorAll('.field-checkbox:checked')]
-                 .map(el => el.dataset.field);
-     const base = RENDERED_FIELDS.length ? RENDERED_FIELDS : ACTIVE_FIELDS;
-    return picked.length ? picked.filter(f => base.includes(f)) : base;
+// One flag per conference/year group: true when the filters keep it.
+function activeGroups() {
+    return data.groups.map(g =>
+        selectedConferences.has(g.conference)
+        && (yearFrom === null || g.year >= yearFrom)
+        && (yearTo === null || g.year <= yearTo));
 }
 
-function getRawScore(univ, field) {
-    const row = data.find(e => e.University === univ);
-    if (!row) return 0;
-    const s = parseFloat(row[field]);
-    return isNaN(s) ? 0 : s;
+function getSelectedCategories(active = activeGroups()) {
+    return fields.filter(field => data.groups.some((g, i) => active[i] && g.field === field));
 }
 
-function getNormalizedScore(univ, field) {
-    // const s = getRawScore(univ, field);
-    // if (!(s > 0)) return 0;
-    // const stats = fieldStats[field] || { std: 1 };
-    // const stats = fieldStats[field] || { mean: 1 };
-    // const std = stats.std > EPS ? stats.std : 1;
-    // const mean = stats.mean > EPS ? stats.mean : 1;
-    // return s / mean;
-    const s = getRawScore(univ, field);
-    return normalizeFieldValue(s, field);
+// ---------------------------------------------------------------------------
+// Scores
+// ---------------------------------------------------------------------------
+
+function fieldScores(entity, active) {
+    const scores = {};
+    entity.scores.forEach((score, i) => {
+        if (!active[i] || !(score > 0)) return;
+        const field = data.groups[i].field;
+        scores[field] = (scores[field] || 0) + score * data.groupScale[i];
+    });
+    return scores;
 }
 
-// function computeFacultyFieldStats() {
-//     facultyFieldStats = {};
-//     const cols = ACTIVE_FIELDS;
-//     cols.forEach(cat => {
-//         const vals = facultyData
-//             .filter(f => f.Category === cat)
-//             .map(f => parseFloat(f.Score))
-//             .filter(v => !isNaN(v) && v > 0);
-//         const n = vals.length;
-//         const mean = n ? vals.reduce((a,b)=>a+b,0)/n : 0;
-//         facultyFieldStats[cat] = { mean };
-//     });
-// }
+function totalScore(entity, active) {
+    let total = 0;
+    entity.scores.forEach((score, i) => {
+        if (active[i]) total += score * data.groupScale[i];
+    });
+    return total;
+}
 
-function getFacultyForUniversity(universityName, selectedCategories) {
-    // First, get ALL faculty data for this university to calculate main fields from all fields
-    const allFacultyForUniversity = facultyData.filter(faculty => {
-        return faculty.University === universityName;
-    });
-    
-    // Then filter by selected categories to determine which faculty to show
-    const filteredFaculty = allFacultyForUniversity.filter(faculty => {
-        const matchesCategory = selectedCategories.length === 0 || 
-                                selectedCategories.includes(faculty.Category);
-        return matchesCategory;
-    });
+function getPeopleForEntity(entityName, active) {
+    const people = (data.people && data.people.get(entityName)) || [];
 
-    const facultyMap = new Map();
-    
-    // Process ALL faculty data to build complete field scores for main field calculation
-    allFacultyForUniversity.forEach(faculty => {
-        const name = faculty['Faculty Name'] || 'Unknown';
-        const rawScore = parseFloat(faculty.Score) || 0;
-        const category = faculty.Category || 'Unknown';
-        
-        // Normalize faculty score by field mean
-        // const stats = fieldStats[category] || { mean: 1 };
-        // const mean = stats.mean > EPS ? stats.mean : 1;
-        // const normalizedScore = rawScore / mean;
-        const normalizedScore = normalizeFieldValue(rawScore, category);
-        
-        if (!facultyMap.has(name)) {
-            facultyMap.set(name, {
-                name,
-                totalScore: 0,
-                paperCount: 0,
-                rawScore: 0,  // Sum raw scores for total paper contributions
-                categoriesSet: new Set(),
-                fieldScores: {},
-                hasSelectedCategory: false  // Track if faculty has contributions in selected categories
-            });
-        }
-        
-        const facultyInfo = facultyMap.get(name);
-        facultyInfo.categoriesSet.add(category);
-        facultyInfo.fieldScores[category] = (facultyInfo.fieldScores[category] || 0) + normalizedScore;
-        
-        // Only add to totalScore and counts if this category is in selected categories
-        if (selectedCategories.length === 0 || selectedCategories.includes(category)) {
-            facultyInfo.totalScore += normalizedScore;
-            facultyInfo.rawScore += rawScore;
-            facultyInfo.paperCount += 1;
-            facultyInfo.hasSelectedCategory = true;
-        }
-    });
-    
-    const mergedFaculty = Array.from(facultyMap.values()).map(facultyInfo => {
-        const entries = Object.entries(facultyInfo.fieldScores);
-        let maxScore = 0;
-        entries.forEach(([, score]) => {
-            if (score > maxScore) maxScore = score;
+    return people.map(person => {
+        // Main fields come from all of a person's scores, whatever the filters keep
+        const allFieldScores = {};
+        let shownScore = 0;
+        person.entries.forEach(([groupIndex, score]) => {
+            const field = data.groups[groupIndex].field;
+            const normalizedScore = score * data.groupScale[groupIndex];
+            allFieldScores[field] = (allFieldScores[field] || 0) + normalizedScore;
+            if (active[groupIndex]) shownScore += normalizedScore;
         });
 
+        const entries = Object.entries(allFieldScores);
+        const maxScore = Math.max(0, ...entries.map(([, score]) => score));
         const threshold = maxScore * 0.3;
-        const mainFields = entries.length
-            ? entries
-                .filter(([field, score]) => {
-                    if (score === maxScore) return true;
-                    return maxScore > 0 && score >= threshold;
-                })
-                .map(([field]) => field)
-            : Array.from(facultyInfo.categoriesSet);
+        const mainFields = entries
+            .filter(([, score]) => score === maxScore || (maxScore > 0 && score >= threshold))
+            .map(([field]) => field);
 
-        // Ensure at least one field is marked as main
-        const effectiveFields = mainFields.length ? mainFields : Array.from(facultyInfo.categoriesSet);
-        
         return {
-            name: facultyInfo.name,
-            totalScore: facultyInfo.totalScore,
-            paperCount: facultyInfo.paperCount,
-            rawScore: facultyInfo.rawScore,
-            categories: effectiveFields,
-            allFields: Array.from(facultyInfo.categoriesSet),
-            hasSelectedCategory: facultyInfo.hasSelectedCategory
+            name: person.name,
+            // People the search found are listed first, so they are not lost in a long table
+            matched: searchQuery.length >= 2 && person.key.includes(searchQuery),
+            totalScore: shownScore,
+            categories: fields.filter(f => mainFields.includes(f))
         };
     })
-    .filter(facultyInfo => facultyInfo.hasSelectedCategory)  // Only show faculty with contributions in selected categories
-    .sort((a, b) => b.totalScore - a.totalScore);
-    
-    return mergedFaculty;
+    .filter(person => person.totalScore > 0)  // Only show people with contributions under the filters
+    .sort((a, b) => b.matched - a.matched || b.totalScore - a.totalScore);
 }
 
-function generateGoogleScholarLink(facultyName, universityName = '') {
-    const q = (facultyName || '').trim().replace(/\s+/g, ' ');
+// DBLP tells namesakes apart with a four-digit suffix ("Wei Wang 0001"); it is part of the
+// DBLP name but not of the person's.
+function displayName(name) {
+    return name.replace(/\s\d{4}$/, '');
+}
+
+function generateGoogleScholarLink(facultyName) {
+    const q = displayName(facultyName || '').trim().replace(/\s+/g, ' ');
     return `https://scholar.google.com/citations?view_op=search_authors&mauthors=${encodeURIComponent(q)}`;
 }
 
 function generateDBLPLink(facultyName) {
     // Clean name, remove special characters, join with spaces
-    const cleanName = facultyName.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ');
-    // return `https://dblp.org/search?q=${encodeURIComponent(cleanName)}`;
+    const cleanName = facultyName.replace(/[^\p{L}\p{N}_\s]/gu, '').replace(/\s+/g, ' ');
     return `https://dblp.org/search?q=author%3A${encodeURIComponent(cleanName.replace(/\s+/g,'_'))}%3A`;
 }
 
+function generatePaperLink(title) {
+    return `https://scholar.google.com/scholar?q=${encodeURIComponent(title)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Row details
+// ---------------------------------------------------------------------------
+
+function setupTableEvents() {
+    const tableBody = document.querySelector('#rankingTable tbody');
+    tableBody.addEventListener('click', event => {
+        const showAll = event.target.closest('.show-all-people');
+        if (showAll) {
+            const detailsRow = showAll.closest('.faculty-details-row');
+            renderPeople(detailsRow.querySelector('.people-section'), detailsRow.dataset.name, Infinity);
+            return;
+        }
+        const row = event.target.closest('tr.university-row');
+        if (!row || !data) return;
+        if (event.target.closest('.chart-icon')) {
+            toggleChartStats(row.dataset.name, row);
+        } else if (event.target.closest('.expand-icon, .university-name')) {
+            toggleUniversityDropdown(row.dataset.name, row);
+        }
+    });
+}
+
+// The detail and chart rows that belong to a ranking row sit directly after it.
+function findAttachedRow(rowElement, className) {
+    let next = rowElement.nextElementSibling;
+    while (next && !next.classList.contains('university-row')) {
+        if (next.classList.contains(className)) return next;
+        next = next.nextElementSibling;
+    }
+    return null;
+}
+
 function toggleUniversityDropdown(universityName, rowElement) {
-    const isExpanded = expandedRows.has(universityName);
-    
-    if (isExpanded) {
-        // Collapse: Remove the details row and any chart stats
-        const detailsRow = rowElement.nextElementSibling;
-        if (detailsRow && detailsRow.classList.contains('faculty-details-row')) {
-            detailsRow.remove();
-        }
-        // Also remove chart stats if present
-        const chartRow = rowElement.nextElementSibling;
-        if (chartRow && chartRow.classList.contains('chart-stats-row')) {
-            chartRow.remove();
-        }
+    const expandIcon = rowElement.querySelector('.expand-icon');
+
+    if (expandedRows.has(universityName)) {
+        // Collapse: Remove the details row
+        const detailsRow = findAttachedRow(rowElement, 'faculty-details-row');
+        if (detailsRow) detailsRow.remove();
         expandedRows.delete(universityName);
-        rowElement.querySelector('.expand-icon').innerHTML = '▶';
-    } else {
-        // Expand: Add the details row
-        const selectedCategories = getSelectedCategories();
-        const facultyList = getFacultyForUniversity(universityName, selectedCategories);
-        
-        const detailsRow = document.createElement('tr');
-        detailsRow.classList.add('faculty-details-row');
-        
-        let facultyHTML = '<td colspan="3"><div class="faculty-details">';
-        
-        if (facultyList.length > 0) {
-            facultyHTML += '<div class="faculty-summary">';
-            facultyHTML += `<h4><i class="fas fa-users"></i> Faculty Members (${facultyList.length})</h4>`;
-            facultyHTML += '</div>';
-            
-            facultyHTML += '<table class="faculty-table">';
-            
-            // CSRankings style header - just two columns
-            facultyHTML += `
-                <thead>
-                    <tr>
-                        <th class="faculty-name-col">Faculty Name</th>
-                        <th class="faculty-info-col">Information</th>
-                    </tr>
-                </thead>
-            `;
-            facultyHTML += '<tbody>';
-            
-            facultyList.forEach(faculty => {
-                const paperCount = faculty.paperCount || 0;
-                const rawScore = faculty.rawScore || 0;
-                const fieldsDisplayFull = faculty.categories.join(', ') || 'N/A';
-                const googleScholarLink = generateGoogleScholarLink(faculty.name);
-                const dblpLink = generateDBLPLink(faculty.name);
-                
-                // Create colored field badges
-                const fieldsHTML = faculty.categories.length > 0
-                    ? faculty.categories.map(f => {
-                        const abbr = getFieldAbbreviation(f);
-                        const fieldClass = getFieldColorClass(f);
-                        return `<span class="field-badge ${fieldClass}" title="${f}">${abbr}</span>`;
-                    }).join(' ')
-                    : '<span class="field-badge field-default">N/A</span>';
-                
-                facultyHTML += `
-                    <tr class="faculty-row">
-                        <td class="faculty-name-cell">
-                            <span class="faculty-name">${faculty.name}</span>
-                            <span class="faculty-fields-display" title="Main Fields: ${fieldsDisplayFull}">
-                                ${fieldsHTML}
-                            </span>
-                        </td>
-                        <td class="faculty-info-cell">
-                            <div class="faculty-info-links">
-                                <span class="score-display" title="Contribution Score: ${faculty.totalScore.toFixed(4)}">
-                                    <i class="fas fa-chart-line"></i>
-                                    <span class="link-text">${faculty.totalScore.toFixed(4)}</span>
-                                </span>
-                                <!-- <span class="info-item" title="Main Fields: ${fieldsDisplayFull}">
-                                    <i class="fas fa-tags"></i>
-                                    <span class="link-text">${faculty.categories.length} main field${faculty.categories.length !== 1 ? 's' : ''}</span>
-                                </span> -->
-                                <!-- <a href="#" class="info-link fields-toggle" data-faculty="${faculty.name}" title="Research Fields Distribution - Click to view chart">
-                                    <i class="fas fa-chart-bar"></i>
-                                </a> -->
-                                <a href="${dblpLink}" target="_blank" rel="noopener noreferrer" class="info-link" title="DBLP">
-                                    <i class="fas fa-file-alt"></i>
-                                </a>
-                                <a href="${googleScholarLink}" target="_blank" rel="noopener noreferrer" class="info-link" title="Google Scholar">
-                                    <i class="fas fa-graduation-cap"></i>
-                                </a>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-            });
-            
-            facultyHTML += '</tbody></table>';
-        } else {
-            facultyHTML += '<p>No faculty data available for the selected fields.</p>';
-        }
-        
-        facultyHTML += '</div></td>';
-        detailsRow.innerHTML = facultyHTML;
-        
-        rowElement.insertAdjacentElement('afterend', detailsRow);
-        expandedRows.add(universityName);
-        const expandIcon = rowElement.querySelector('.expand-icon');
-        expandIcon.innerHTML = '▼';
-        expandIcon.classList.add('expanded');
-        
-        // Add Fields chart click event
-        setupFieldsChartEvents();
-    }
-}
-
-function setupFieldsChartEvents() {
-    const fieldsToggles = document.querySelectorAll('.fields-toggle');
-    fieldsToggles.forEach(toggle => {
-        toggle.addEventListener('click', function(e) {
-            e.preventDefault();
-            const facultyName = this.getAttribute('data-faculty');
-            showFieldsChart(facultyName);
-        });
-    });
-}
-
-function showFieldsChart(facultyName) {
-    // Find current faculty row
-    const facultyLink = document.querySelector(`[data-faculty="${facultyName}"]`);
-    if (!facultyLink) {
-        console.error('Faculty link not found:', facultyName);
+        expandIcon.innerHTML = '▶';
+        expandIcon.classList.remove('expanded');
         return;
     }
-    
-    const facultyRow = facultyLink.closest('tr');
-    const nextRow = facultyRow.nextElementSibling;
-    
-    // If chart already exists, remove it
-    if (nextRow && nextRow.classList.contains('faculty-chart-row')) {
-        nextRow.remove();
-        return;
-    }
-    
-    // Create inline chart row
-    const chartRow = document.createElement('tr');
-    chartRow.classList.add('faculty-chart-row');
-    chartRow.innerHTML = `
-        <td colspan="2">
-            <div class="inline-chart-container">
-                ${createInlineChart(facultyName)}
-            </div>
-        </td>
+
+    // Expand: Add the details row
+    const detailsRow = document.createElement('tr');
+    detailsRow.classList.add('faculty-details-row');
+    detailsRow.dataset.name = universityName;
+    detailsRow.innerHTML = `
+        <td colspan="3"><div class="faculty-details">
+            ${data.config.papersFile ? '<div class="papers-section"></div>' : ''}
+            <div class="people-section"></div>
+        </div></td>
     `;
-    
-    // Insert after faculty row
-    facultyRow.insertAdjacentElement('afterend', chartRow);
+    rowElement.insertAdjacentElement('afterend', detailsRow);
+    expandedRows.add(universityName);
+    expandIcon.innerHTML = '▼';
+    expandIcon.classList.add('expanded');
+
+    const dataset = data;
+    const peopleSection = detailsRow.querySelector('.people-section');
+    if (dataset.people) {
+        renderPeople(peopleSection, universityName, PEOPLE_PAGE);
+    } else {
+        peopleSection.innerHTML = '<p class="details-note">Loading…</p>';
+        dataset.peopleReady.then(() => {
+            if (data === dataset && detailsRow.isConnected) {
+                renderPeople(peopleSection, universityName, PEOPLE_PAGE);
+            }
+        });
+    }
+    if (dataset.config.papersFile) {
+        renderPapers(detailsRow.querySelector('.papers-section'), universityName);
+    }
 }
 
-function createInlineChart(facultyName) {
-    // Count papers by field for this faculty member
-    const fieldStats = {};
-    const facultyPapers = facultyData.filter(faculty => faculty['Faculty Name'] === facultyName);
-    
-    facultyPapers.forEach(paper => {
-        const category = paper.Category;
-        if (!fieldStats[category]) {
-            fieldStats[category] = 0;
-        }
-        fieldStats[category]++;
-    });
-    
-    const totalPapers = Object.values(fieldStats).reduce((sum, count) => sum + count, 0);
-    if (totalPapers === 0) {
-        return '<p class="no-data">No research data available for this faculty member.</p>';
+function renderPeople(section, entityName, limit) {
+    const config = data.config;
+    if (!data.people) {
+        section.innerHTML = `<p class="details-note">Could not load ${escapeHtml(config.peopleLabel.toLowerCase())}.</p>`;
+        return;
     }
-    
-    // Sort by paper count
-    const sortedFields = Object.entries(fieldStats)
-        .sort(([,a], [,b]) => b - a);
-    
-    // Get maximum value for scaling
-    const maxValue = Math.max(...Object.values(fieldStats));
-    
-    let chartHTML = '<div class="inline-chart">';
-    chartHTML += '<div class="chart-header">';
-    chartHTML += '<span class="chart-title">Research Fields Distribution</span>';
-    chartHTML += `<span class="chart-total">Total: ${totalPapers} papers</span>`;
-    chartHTML += '</div>';
-    chartHTML += '<div class="chart-bars-container">';
-    
-    sortedFields.forEach(([field, count]) => {
-        const percentage = (count / maxValue) * 100;
-        const fieldAbbr = getFieldAbbreviation(field);
-        chartHTML += `
-            <div class="chart-bar-item">
-                <div class="field-label">${fieldAbbr}</div>
-                <div class="bar-container">
-                    <div class="bar-fill" style="width: ${percentage}%"></div>
-                    <div class="bar-value">${count}</div>
-                </div>
-            </div>
+    const peopleList = getPeopleForEntity(entityName, activeGroups());
+    if (peopleList.length === 0) {
+        section.innerHTML = `<p class="details-note">${escapeHtml(config.emptyPeople)}</p>`;
+        return;
+    }
+
+    let peopleHTML = '<div class="faculty-summary">';
+    peopleHTML += `<h4><i class="fas fa-users"></i> ${escapeHtml(config.peopleLabel)} (${peopleList.length.toLocaleString()})</h4>`;
+    peopleHTML += '</div>';
+
+    peopleHTML += '<table class="faculty-table">';
+
+    // CSRankings style header - just two columns
+    peopleHTML += `
+        <thead>
+            <tr>
+                <th class="faculty-name-col">${escapeHtml(config.personLabel)}</th>
+                <th class="faculty-info-col">Information</th>
+            </tr>
+        </thead>
+    `;
+    peopleHTML += '<tbody>';
+
+    peopleList.slice(0, limit).forEach(faculty => {
+        const fieldsDisplayFull = faculty.categories.join(', ') || 'N/A';
+        const googleScholarLink = generateGoogleScholarLink(faculty.name);
+        const dblpLink = generateDBLPLink(faculty.name);
+
+        // Create colored field badges
+        const fieldsHTML = faculty.categories.length > 0
+            ? faculty.categories.map(f => {
+                const abbr = getFieldAbbreviation(f);
+                const fieldClass = getFieldColorClass(f);
+                return `<span class="field-badge ${fieldClass}" title="${escapeHtml(f)}">${escapeHtml(abbr)}</span>`;
+            }).join(' ')
+            : '<span class="field-badge field-default">N/A</span>';
+
+        peopleHTML += `
+            <tr class="faculty-row${faculty.matched ? ' search-hit' : ''}">
+                <td class="faculty-name-cell">
+                    <span class="faculty-name">${escapeHtml(displayName(faculty.name))}</span>
+                    <span class="faculty-fields-display" title="Main Fields: ${escapeHtml(fieldsDisplayFull)}">
+                        ${fieldsHTML}
+                    </span>
+                </td>
+                <td class="faculty-info-cell">
+                    <div class="faculty-info-links">
+                        <span class="score-display" title="Contribution Score: ${faculty.totalScore.toFixed(4)}">
+                            <i class="fas fa-chart-line"></i>
+                            <span class="link-text">${faculty.totalScore.toFixed(4)}</span>
+                        </span>
+                        <a href="${escapeHtml(dblpLink)}" target="_blank" rel="noopener noreferrer" class="info-link" title="DBLP">
+                            <i class="fas fa-file-alt"></i>
+                        </a>
+                        <a href="${escapeHtml(googleScholarLink)}" target="_blank" rel="noopener noreferrer" class="info-link" title="Google Scholar">
+                            <i class="fas fa-graduation-cap"></i>
+                        </a>
+                    </div>
+                </td>
+            </tr>
         `;
     });
-    
-    chartHTML += '</div></div>';
-    return chartHTML;
+
+    peopleHTML += '</tbody></table>';
+    if (peopleList.length > limit) {
+        peopleHTML += `<button type="button" class="show-all-people">Show all ${peopleList.length.toLocaleString()}</button>`;
+    }
+    section.innerHTML = peopleHTML;
+}
+
+// All papers come in one file, fetched once, and not until a row is opened: most visits never
+// open one.
+function loadPapers(dataset) {
+    if (!dataset.papers) {
+        const request = fetch(dataset.config.papersFile).then(response => {
+            if (!response.ok) throw new Error(`${dataset.config.papersFile}: ${response.status}`);
+            return response.json();
+        });
+        request.catch(() => { dataset.papers = null; });   // let the next opened row retry
+        dataset.papers = request;
+    }
+    return dataset.papers;
+}
+
+async function renderPapers(section, entityName) {
+    const dataset = data;
+    const heading = '<div class="faculty-summary"><h4><i class="fas fa-file-alt"></i> Most Cited Papers</h4></div>';
+    section.innerHTML = heading + '<p class="details-note">Loading…</p>';
+
+    let allPapers;
+    try {
+        allPapers = await loadPapers(dataset);
+    } catch (error) {
+        section.innerHTML = heading + '<p class="details-note">Could not load papers.</p>';
+        return;
+    }
+    if (data !== dataset || !section.isConnected) return;
+
+    // Count only the citations made by the conferences and years the filters keep
+    const active = activeGroups();
+    const activeKeys = new Set(dataset.groups.filter((g, i) => active[i]).map(g => g.key));
+    const papers = (allPapers[entityName] || []).map(paper => {
+        let citations = 0;
+        Object.entries(paper.cites).forEach(([key, count]) => {
+            if (activeKeys.has(key)) citations += count;
+        });
+        return { title: paper.title, year: paper.year, citations };
+    })
+    .filter(paper => paper.citations > 0)
+    .sort((a, b) => b.citations - a.citations || a.title.localeCompare(b.title));
+
+    if (papers.length === 0) {
+        section.innerHTML = heading + '<p class="details-note">No papers cited by the selected conferences and years.</p>';
+        return;
+    }
+
+    const items = papers.slice(0, TOP_PAPERS).map(paper => {
+        const meta = [];
+        if (paper.year) meta.push(String(paper.year));
+        meta.push(`${paper.citations.toLocaleString()} citing paper${paper.citations !== 1 ? 's' : ''}`);
+        return `
+            <li>
+                <a href="${escapeHtml(generatePaperLink(paper.title))}" target="_blank" rel="noopener noreferrer" class="paper-title">${escapeHtml(paper.title)}</a>
+                <span class="paper-meta" title="Papers at the selected conferences and years that named this among their five most important references">${escapeHtml(meta.join(' · '))}</span>
+            </li>
+        `;
+    }).join('');
+    const more = papers.length > TOP_PAPERS
+        ? `<p class="details-note">Top ${TOP_PAPERS} of ${papers.length.toLocaleString()} cited papers.</p>` : '';
+    section.innerHTML = heading + `<ol class="paper-list">${items}</ol>` + more;
 }
 
 function getFieldAbbreviation(field) {
@@ -624,90 +877,133 @@ function getFieldColorClass(field) {
     return colorClasses[field] || 'field-default';
 }
 
+// ---------------------------------------------------------------------------
+// Ranking table
+// ---------------------------------------------------------------------------
+
 function displayRankings() {
     showLoadingSpinner();
-    
+    const dataset = data;
+
     // Simulate loading delay for better UX
     setTimeout(() => {
+        if (data !== dataset) return;
         const calculatedScores = [];
-        const seenUniversities = new Set();
-        const selectedCats = getSelectedCategories();
+        const active = activeGroups();
 
-        data.forEach(university => {
-            if (selectedRegion !== 'all' && university.Continent) {
-                const match = university.Continent.trim().toLowerCase() === selectedRegion.toLowerCase();
-                if (!match) return;
+        data.entities.forEach(entity => {
+            if (selectedRegion !== 'all'
+                    && entity.continent.toLowerCase() !== selectedRegion.toLowerCase()) {
+                return;
             }
-            if (selectedCountry !== 'all') {
-                const country = (university.Country || '').trim();
-                if (!country || country !== selectedCountry) return;
-            }
+            if (selectedCountry !== 'all' && entity.country !== selectedCountry) return;
 
-            let totalScore = 0;
-            selectedCats.forEach(cat => {
-                totalScore += getNormalizedScore(university.University, cat);
-            });
-
-            if (!seenUniversities.has(university.University) && totalScore > 0) {
+            const score = totalScore(entity, active);
+            if (score > 0) {
                 calculatedScores.push({
-                    University: university.University,
-                    Continent: university.Continent || 'Unknown',
-                    Score: totalScore
+                    name: entity.name,
+                    Continent: entity.continent,
+                    Country: entity.country,
+                    Score: score
                 });
-                seenUniversities.add(university.University);
             }
         });
 
-        calculatedScores.sort((a, b) => b.Score - a.Score);
+        calculatedScores.sort((a, b) => b.Score - a.Score || a.name.localeCompare(b.name));
+        calculatedScores.forEach((row, index) => { row.rank = index + 1; });
 
-        lastFiltered = calculatedScores;
-        updateStats(calculatedScores);
-        displayAllRankings(calculatedScores);
+        lastRanked = calculatedScores;
+        applySearch();
         hideLoadingSpinner();
     }, 300);
 }
 
-function displayAllRankings(data) {
-    const table = document.getElementById('rankingTable');
-    const tableBody = table.querySelector('tbody');
-    tableBody.innerHTML = '';
+// Lower-case and accent-free, so "zurich" finds "Zürich" and "hyvarinen" finds "Hyvärinen".
+function searchKey(text) {
+    return String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
 
-    data.forEach((university, index) => {
-        const row = tableBody.insertRow();
-        row.classList.add('university-row', 'fade-in');
-        
-        const rank = index + 1;
-        const countryFlag = getCountryFlag(university.University);
-        const flagHtml = countryFlag ? `<img src="${countryFlag}" alt="Flag" class="country-flag-img" onerror="this.style.display='none'">` : '';
-        const chartIcon = generateChartIcon(university.University);
-        
-        const universityCell = `
-            <td class="rank-col">${rank}</td>
-            <td class="institution-col university-name-cell">
-                <span class="expand-icon" onclick="toggleUniversityDropdown('${university.University.replace(/'/g, "\\'")}', this.closest('tr'))">▶</span>
-                <span class="university-name" title="View details" onclick="toggleUniversityDropdown('${university.University.replace(/'/g, "\\'")}', this.closest('tr'))">${university.University}</span>
-                ${flagHtml}
-                ${chartIcon}
-            </td>
-            <td class="score-col">
-                <span class="score-value">${university.Score.toFixed(2)}</span>
-            </td>
-        `;
-        
-        row.innerHTML = universityCell;
-        
-        // Re-expand if this university was previously expanded
-        if (expandedRows.has(university.University)) {
-            setTimeout(() => {
-                toggleUniversityDropdown(university.University, row);
-            }, 0);
-        }
+function setupSearch() {
+    const input = document.getElementById('searchInput');
+    let timer = null;
+    input.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            searchQuery = searchKey(input.value);
+            if (!data) return;
+            expandedRows.clear();
+            applySearch();
+        }, 150);
     });
 }
 
-// Removed pagination functions - now using scroll mode
+// People of an institution whose name matches the search and who score under the filters.
+function matchingPeople(entityName, active) {
+    if (searchQuery.length < 2 || !data.people) return [];
+    return (data.people.get(entityName) || []).filter(person =>
+        person.key.includes(searchQuery)
+        && person.entries.some(([groupIndex]) => active[groupIndex]));
+}
 
-// New utility functions
+// The search narrows the table without re-ranking: a row keeps the rank it has among everything
+// the filters keep. A row is shown when its own name matches or one of its people does.
+function applySearch() {
+    let rows = lastRanked;
+    if (searchQuery) {
+        const active = activeGroups();
+        rows = [];
+        lastRanked.forEach(row => {
+            const people = matchingPeople(row.name, active);
+            if (data.byName.get(row.name).key.includes(searchQuery) || people.length) {
+                rows.push({ ...row, matches: people.map(person => displayName(person.name)) });
+            }
+        });
+    }
+    lastFiltered = rows;
+    updateStats(rows);
+    displayAllRankings(rows);
+}
+
+function displayAllRankings(rows) {
+    const tableBody = document.querySelector('#rankingTable tbody');
+
+    if (rows.length === 0) {
+        const message = selectedConferences.size === 0
+            ? 'Select at least one field or conference.'
+            : searchQuery && lastRanked.length
+                ? `Nothing matches "${document.getElementById('searchInput').value.trim()}".`
+                : 'Nothing matches the selected filters.';
+        tableBody.innerHTML = `<tr><td colspan="3" class="empty-row">${escapeHtml(message)}</td></tr>`;
+        return;
+    }
+
+    tableBody.innerHTML = rows.map(row => {
+        // Name the people the search found, so it is clear why the row is listed
+        const matches = row.matches || [];
+        const matchHtml = matches.length
+            ? `<span class="search-match" title="${escapeHtml(matches.join(', '))}">${escapeHtml(matches.slice(0, 3).join(', '))}${matches.length > 3 ? ` +${matches.length - 3} more` : ''}</span>`
+            : '';
+        const countryFlag = getCountryFlag(row.Country);
+        const flagHtml = countryFlag ? `<img src="${countryFlag}" alt="${escapeHtml(row.Country)}" title="${escapeHtml(row.Country)}" class="country-flag-img" loading="lazy" onerror="this.style.display='none'">` : '';
+
+        return `
+            <tr class="university-row fade-in" data-name="${escapeHtml(row.name)}">
+                <td class="rank-col">${row.rank}</td>
+                <td class="institution-col university-name-cell">
+                    <span class="expand-icon">▶</span>
+                    <span class="university-name" title="View details">${escapeHtml(row.name)}</span>
+                    ${flagHtml}
+                    <i class="fas fa-chart-bar chart-icon" title="View field statistics"></i>
+                    ${matchHtml}
+                </td>
+                <td class="score-col">
+                    <span class="score-value">${row.Score.toFixed(2)}</span>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
 function showLoadingSpinner() {
     document.getElementById('loadingSpinner').style.display = 'flex';
 }
@@ -716,47 +1012,48 @@ function hideLoadingSpinner() {
     document.getElementById('loadingSpinner').style.display = 'none';
 }
 
-function updateStats(data) {
-    const totalUniversities = data.length;
-    
-    // Count unique authors from faculty data for filtered universities and selected categories
-    const selectedCats = getSelectedCategories();
-    const filteredUniversityNames = new Set(data.map(uni => uni.University));
-    
-    const uniqueAuthors = new Set();
-    facultyData.forEach(faculty => {
-        // Check if faculty's university is in the filtered list
-        if (filteredUniversityNames.has(faculty.University)) {
-            // Check if faculty's category is in selected categories
-            if (selectedCats.length === 0 || selectedCats.includes(faculty.Category)) {
-                const authorName = faculty['Faculty Name'];
-                if (authorName) {
-                    uniqueAuthors.add(authorName);
-                }
-            }
-        }
-    });
-    
-    const totalAuthors = uniqueAuthors.size;
-    const activeFilters = getActiveFilterCount();
-    
+function showLoadError(error) {
+    console.error(error);
+    hideLoadingSpinner();
+    document.querySelector('#rankingTable tbody').innerHTML =
+        '<tr><td colspan="3" class="empty-row">Could not load the ranking data. Please try reloading the page.</td></tr>';
+}
+
+function updateStats(rows) {
+    const totalUniversities = rows.length;
+
     document.getElementById('totalUniversities').textContent = totalUniversities.toLocaleString();
-    document.getElementById('totalScore').textContent = totalAuthors.toLocaleString();
-    document.getElementById('activeFilters').textContent = activeFilters;
-    
-    // Update scroll info
+    document.getElementById('activeFilters').textContent = getActiveFilterCount();
     document.getElementById('totalCount').textContent = totalUniversities.toLocaleString();
+
+    // Count unique people credited at the listed institutions under the current filters
+    if (!data || !data.people) {
+        document.getElementById('totalScore').textContent = '…';
+        return;
+    }
+    const active = activeGroups();
+    const uniqueAuthors = new Set();
+    rows.forEach(row => {
+        (data.people.get(row.name) || []).forEach(person => {
+            if (person.entries.some(([groupIndex]) => active[groupIndex])) {
+                uniqueAuthors.add(person.name);
+            }
+        });
+    });
+    document.getElementById('totalScore').textContent = uniqueAuthors.size.toLocaleString();
 }
 
 function getActiveFilterCount() {
     let count = 0;
     if (selectedRegion !== 'all') count++;
     if (selectedCountry !== 'all') count++;
-    count += getSelectedCategories().length;
+    if (yearFrom !== null || yearTo !== null) count++;
+    if (searchQuery) count++;
+    if (!renderedConferences().every(c => selectedConferences.has(c.id))) count++;
     return count;
 }
 
-// Country name to country code mapping 
+// Country name to country code mapping
 const COUNTRY_NAME_TO_CODE = {
     'United States': 'us', 'Canada': 'ca', 'United Kingdom': 'gb', 'Germany': 'de',
     'France': 'fr', 'Italy': 'it', 'Spain': 'es', 'Netherlands': 'nl', 'Sweden': 'se',
@@ -790,55 +1087,19 @@ const COUNTRY_NAME_TO_CODE = {
     'Mali': 'ml', 'Senegal': 'sn', 'Gambia': 'gm', 'Guinea': 'gn', 'Guinea-Bissau': 'gw',
     'Sierra Leone': 'sl', 'Liberia': 'lr', 'Ivory Coast': 'ci', 'Ghana': 'gh', 'Togo': 'tg',
     'Cape Verde': 'cv', 'Macao': 'mo', 'Macau': 'mo',
-    'Argentina': 'ar', 'Brazil': 'br', 'Chile': 'cl', 'Colombia': 'co'
+    'Argentina': 'ar', 'Brazil': 'br', 'Chile': 'cl', 'Colombia': 'co',
+    'Armenia': 'am', 'Ecuador': 'ec', 'Iceland': 'is', 'Serbia': 'rs', 'Uruguay': 'uy',
+    'Mexico': 'mx', 'Peru': 'pe'
 };
 
-function getCountryFlag(institutionName) {
-    // Find institution in main data 
-    const university = data.find(row => 
-        row.University?.trim().toLowerCase() === institutionName.trim().toLowerCase()
-    );
-    
-    if (!university?.Country) return '';
-    
-    const countryCode = COUNTRY_NAME_TO_CODE[university.Country];
+function getCountryFlag(country) {
+    const countryCode = COUNTRY_NAME_TO_CODE[country];
     return countryCode ? `https://flagcdn.com/20x15/${countryCode}.png` : '';
-}
-
-function getGlobalMaxScore(selectedCats) {
-    let globalMax = 0;
-    
-    // Find the maximum score across all universities for the selected categories
-    data.forEach(university => {
-        selectedCats.forEach(field => {
-            const score = getRawScore(university.University, field);
-            if (score > globalMax) {
-                globalMax = score;
-            }
-        });
-    });
-    
-    return globalMax;
-}
-
-function getTopFields(universityName, chartData, globalMaxScore) {
-    const topFields = [];
-    
-    chartData.forEach(item => {
-        // Check if this university has the highest score in this field
-        const isTop = item.score === globalMaxScore && item.score > 0;
-        if (isTop) {
-            // Get the display name for the field
-            const displayName = getFieldDisplayName(item.field);
-            topFields.push(displayName);
-        }
-    });
-    
-    return topFields;
 }
 
 function getFieldDisplayName(field) {
     const displayNames = {
+        'Artificial Intelligence & Machine Learning': 'Artificial Intelligence',
         'Machine Learning': 'Machine Learning',
         'Computer Vision & Image Processing': 'Computer Vision',
         'Natural Language Processing': 'Natural Language Processing',
@@ -847,157 +1108,107 @@ function getFieldDisplayName(field) {
     return displayNames[field] || field;
 }
 
-function getPerFieldMaxMapNormalized(selectedCats) {
-    const maxMap = {};
-    selectedCats.forEach(f => maxMap[f] = 0);
-    data.forEach(u => {
-      selectedCats.forEach(f => {
-        const s = getNormalizedScore(u.University, f); 
-        if (s > maxMap[f]) maxMap[f] = s;
-      });
+function getPerFieldRanks(active) {
+    // field -> { ranks: Map(entity name -> 1-based rank), count: entities with any score in the field }
+    const perField = {};
+    data.entities.forEach(entity => {
+        Object.entries(fieldScores(entity, active)).forEach(([field, score]) => {
+            (perField[field] = perField[field] || []).push({ name: entity.name, score });
+        });
     });
-    return maxMap;
+    const out = {};
+    Object.entries(perField).forEach(([field, list]) => {
+        list.sort((a, b) => b.score - a.score);
+        const ranks = new Map();
+        list.forEach((item, i) => {
+            // ties share a rank (1, 2, 2, 4)
+            const prev = i > 0 ? list[i - 1] : null;
+            ranks.set(item.name, prev && Math.abs(prev.score - item.score) < EPS ? ranks.get(prev.name) : i + 1);
+        });
+        out[field] = { ranks, count: list.length };
+    });
+    return out;
 }
 
-function generateChartIcon(universityName) {
-    return `<i class="fas fa-chart-bar chart-icon" onclick="toggleChartStats('${universityName.replace(/'/g, "\\'")}', this.closest('tr'))" title="View field statistics"></i>`;
-}
-
-// function toggleChartStats(universityName, row) {
-//     // Check if chart is already expanded (look in next sibling row)
-//     const nextRow = row.nextElementSibling;
-//     if (nextRow && nextRow.classList.contains('chart-stats-row')) {
-//         nextRow.remove();
-//         return;
-//     }
-
-    
-//     const university = data.find(u => u.University === universityName);
-//     if (!university) return;
-    
-//     const selectedCats = getSelectedCategories();
-//     const chartData = selectedCats.map(field => ({
-//         field: field,
-//         score: getRawScore(universityName, field)
-//     })).filter(item => item.score > 0);
-    
-//     if (chartData.length === 0) return;
-    
-//     // Create chart row
-//     const chartRow = document.createElement('tr');
-//     chartRow.classList.add('chart-stats-row');
-    
-//     // Use global maximum score for consistent scaling
-//     const globalMaxScore = getGlobalMaxScore(selectedCats);
-    
-//     // Check for top performers
-//     const topFields = getTopFields(universityName, chartData, globalMaxScore);
-    
-//     let chartHTML = '<td colspan="3"><div class="chart-stats-container">';
-//     chartHTML += '<h4>Field Statistics</h4>';
-    
-//     // Add top performer notice if any
-//     if (topFields.length > 0) {
-//         chartHTML += '<div class="top-performer-notice">';
-//         chartHTML += '<i class="fas fa-trophy"></i>';
-//         chartHTML += '<span>Top of ' + topFields.join(', ') + '</span>';
-//         chartHTML += '</div>';
-//     }
-    
-//     chartHTML += '<div class="chart-scale">';
-//     chartHTML += '<span class="scale-label">Scale: 0 - ' + globalMaxScore.toFixed(2) + '</span>';
-//     chartHTML += '</div>';
-//     chartHTML += '<div class="chart-bars">';
-    
-//     chartData.forEach(item => {
-//         const percentage = (item.score / globalMaxScore) * 100;
-//         chartHTML += `
-//             <div class="chart-bar-item">
-//                 <div class="chart-bar-label">${item.field}</div>
-//                 <div class="chart-bar-container">
-//                     <div class="chart-bar" style="width: ${percentage}%"></div>
-//                     <div class="chart-bar-value">${item.score.toFixed(2)}</div>
-//                 </div>
-//             </div>
-//         `;
-//     });
-    
-//     chartHTML += '</div></div></td>';
-//     chartRow.innerHTML = chartHTML;
-    
-//     // Insert after current row
-//     row.parentNode.insertBefore(chartRow, row.nextSibling);
-// }
 function toggleChartStats(universityName, row) {
-    const nextRow = row.nextElementSibling;
-    if (nextRow && nextRow.classList.contains('chart-stats-row')) {
-      nextRow.remove();
-      return;
+    const existing = findAttachedRow(row, 'chart-stats-row');
+    if (existing) {
+        existing.remove();
+        return;
     }
-  
-    const university = data.find(u => u.University === universityName);
-    if (!university) return;
-  
-    const selectedCats = getSelectedCategories();
-  
-    const chartData = selectedCats.map(field => {
-      const raw = getRawScore(universityName, field);
-      if (!(raw > 0)) return null;
-      const norm = getNormalizedScore(universityName, field);
-      return { field, raw, score: norm };   // use normalized score
-    }).filter(Boolean);
-  
+
+    const entity = data.byName.get(universityName);
+    if (!entity) return;
+
+    const active = activeGroups();
+    const scores = fieldScores(entity, active);
+    const total = Object.values(scores).reduce((sum, s) => sum + s, 0);
+    const chartData = getSelectedCategories(active)
+        .filter(field => scores[field] > 0)
+        .map(field => ({ field, score: scores[field], share: total > EPS ? scores[field] / total : 0 }))
+        .sort((a, b) => b.score - a.score);
+
     if (chartData.length === 0) return;
-  
-    const perFieldMax = getPerFieldMaxMapNormalized(selectedCats);
-  
+
+    const perField = getPerFieldRanks(active);
+    const noun = currentTab === 'universities' ? 'schools' : 'companies';
+
     const chartRow = document.createElement('tr');
     chartRow.classList.add('chart-stats-row');
-  
+
     let chartHTML = '<td colspan="3"><div class="chart-stats-container">';
-    chartHTML += '<h4>Field Statistics</h4>';
+    chartHTML += '<h4>Field breakdown</h4>';
+    const one = currentTab === 'universities' ? 'school' : 'company';
+    chartHTML += `<p class="chart-caption">Bar: share of this ${one}'s total impact score. `
+        + `Rank: position among all ${noun} with impact in that field, under the current filters.</p>`;
     chartHTML += '<div class="chart-bars">';
-  
+
     chartData.forEach(item => {
-      const cap = perFieldMax[item.field] || 1;
-      const pct = Math.min(100, (item.score / cap) * 100);
-      chartHTML += `
-        <div class="chart-bar-item">
-          <div class="chart-bar-label">${getFieldDisplayName(item.field)}</div>
-          <div class="chart-bar-container">
-            <div class="chart-bar" style="width:${pct}%"></div>
-            <div class="chart-bar-value">${item.score.toFixed(2)}</div>
-          </div>
-        </div>
-      `;
+        const pct = Math.round(item.share * 1000) / 10;
+        const info = perField[item.field] || { ranks: new Map(), count: 0 };
+        const rank = info.ranks.get(entity.name);
+        chartHTML += `
+            <div class="chart-bar-item">
+              <div class="chart-bar-label">${escapeHtml(getFieldDisplayName(item.field))}</div>
+              <div class="chart-bar-container">
+                <div class="chart-bar" style="width:${Math.min(100, item.share * 100)}%"></div>
+                <div class="chart-bar-share">${pct}%</div>
+              </div>
+              <div class="chart-bar-value" title="field impact score">${item.score.toFixed(2)}</div>
+              <div class="chart-bar-rank" title="rank in this field">${rank ? `#${rank.toLocaleString()} of ${info.count.toLocaleString()}` : '—'}</div>
+            </div>
+        `;
     });
-  
+
     chartHTML += '</div></div></td>';
     chartRow.innerHTML = chartHTML;
     row.parentNode.insertBefore(chartRow, row.nextSibling);
-}  
+}
 
 function exportData() {
     if (lastFiltered.length === 0) {
         alert('No data to export');
         return;
     }
-    
+
+    const quote = value => /[",\n]/.test(String(value))
+        ? '"' + String(value).replace(/"/g, '""') + '"' : String(value);
     const csvContent = [
-        ['Rank', 'University', 'Continent', 'Impact Score'],
-        ...lastFiltered.map((uni, index) => [
-            index + 1,
-            uni.University,
-            uni.Continent,
-            uni.Score.toFixed(2)
+        ['Rank', data.config.entityCol, 'Continent', 'Country', 'Impact Score'],
+        ...lastFiltered.map(row => [
+            row.rank,
+            row.name,
+            row.Continent,
+            row.Country,
+            row.Score.toFixed(2)
         ])
-    ].map(row => row.join(',')).join('\n');
-    
+    ].map(row => row.map(quote).join(',')).join('\n');
+
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ai-rankings-${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `${data.config.exportName}-${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1016,19 +1227,18 @@ function toggleDemoNotice() {
 
 function toggleDescription(event) {
     event.preventDefault();
-    const shortDesc = document.getElementById('shortDescription');
-    const fullDesc = document.getElementById('fullDescription');
-    const link = document.getElementById('readMoreLink');
-    
-    if (fullDesc.style.display === 'none') {
-        shortDesc.style.display = 'none';
-        fullDesc.style.display = 'inline';
-        link.textContent = 'read less';
-    } else {
-        shortDesc.style.display = 'inline';
-        fullDesc.style.display = 'none';
-        link.textContent = 'read more';
-    }
+    descriptionExpanded = !descriptionExpanded;
+    updateDescription();
+}
+
+// Each tab has its own description; the "read more" state carries over between them.
+function updateDescription() {
+    document.querySelectorAll('.tab-description').forEach(block => {
+        block.style.display = block.dataset.tab === currentTab ? '' : 'none';
+        block.querySelector('.description-short').style.display = descriptionExpanded ? 'none' : 'inline';
+        block.querySelector('.description-full').style.display = descriptionExpanded ? 'inline' : 'none';
+    });
+    document.getElementById('readMoreLink').textContent = descriptionExpanded ? 'read less' : 'read more';
 }
 
 // Initialize the application
