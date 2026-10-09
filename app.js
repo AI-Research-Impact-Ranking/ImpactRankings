@@ -99,6 +99,22 @@ function parseCSV(text) {
     return rows;
 }
 
+async function loadDataStamp() {
+    // data/meta.json is written by the export alongside the CSVs: when, and how much.
+    const el = document.getElementById('dataStamp');
+    if (!el) return;
+    try {
+        const meta = await (await fetch('data/meta.json')).json();
+        const when = new Date(meta.updated + 'T00:00:00Z')
+            .toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+        el.textContent = `Data as of ${when} · ${Number(meta.ranked_papers).toLocaleString()} papers ranked · `
+            + `${meta.conferences} conferences · ${Number(meta.schools).toLocaleString()} schools · `
+            + `${Number(meta.companies).toLocaleString()} companies`;
+    } catch (error) {
+        el.textContent = '';
+    }
+}
+
 async function loadCSV(filePath) {
     const response = await fetch(filePath);
     if (!response.ok) throw new Error(`${filePath}: ${response.status}`);
@@ -122,6 +138,8 @@ async function initialize() {
     setupSearch();
     setupTableEvents();
 
+    loadDataStamp();
+
     try {
         const table = await loadCSV('data/conferences.csv');
         const col = name => table.headers.indexOf(name);
@@ -130,7 +148,8 @@ async function initialize() {
             name: r[col('Name')] || r[col('Conference')],
             field: r[col('Category')]
         }));
-        fields = Array.from(new Set(conferences.map(c => c.field)));
+        fields = Array.from(new Set(conferences.map(c => c.field)))
+            .sort((x, y) => getFieldDisplayName(x).localeCompare(getFieldDisplayName(y)));
         selectedConferences = new Set(conferences.map(c => c.id));
     } catch (error) {
         showLoadError(error);
@@ -1080,6 +1099,7 @@ function getCountryFlag(country) {
 
 function getFieldDisplayName(field) {
     const displayNames = {
+        'Artificial Intelligence & Machine Learning': 'Artificial Intelligence',
         'Machine Learning': 'Machine Learning',
         'Computer Vision & Image Processing': 'Computer Vision',
         'Natural Language Processing': 'Natural Language Processing',
@@ -1088,14 +1108,26 @@ function getFieldDisplayName(field) {
     return displayNames[field] || field;
 }
 
-function getPerFieldMaxMapNormalized(active) {
-    const maxMap = {};
+function getPerFieldRanks(active) {
+    // field -> { ranks: Map(entity name -> 1-based rank), count: entities with any score in the field }
+    const perField = {};
     data.entities.forEach(entity => {
         Object.entries(fieldScores(entity, active)).forEach(([field, score]) => {
-            maxMap[field] = Math.max(maxMap[field] || 0, score);
+            (perField[field] = perField[field] || []).push({ name: entity.name, score });
         });
     });
-    return maxMap;
+    const out = {};
+    Object.entries(perField).forEach(([field, list]) => {
+        list.sort((a, b) => b.score - a.score);
+        const ranks = new Map();
+        list.forEach((item, i) => {
+            // ties share a rank (1, 2, 2, 4)
+            const prev = i > 0 ? list[i - 1] : null;
+            ranks.set(item.name, prev && Math.abs(prev.score - item.score) < EPS ? ranks.get(prev.name) : i + 1);
+        });
+        out[field] = { ranks, count: list.length };
+    });
+    return out;
 }
 
 function toggleChartStats(universityName, row) {
@@ -1110,31 +1142,40 @@ function toggleChartStats(universityName, row) {
 
     const active = activeGroups();
     const scores = fieldScores(entity, active);
+    const total = Object.values(scores).reduce((sum, s) => sum + s, 0);
     const chartData = getSelectedCategories(active)
         .filter(field => scores[field] > 0)
-        .map(field => ({ field, score: scores[field] }));   // use normalized score
+        .map(field => ({ field, score: scores[field], share: total > EPS ? scores[field] / total : 0 }))
+        .sort((a, b) => b.score - a.score);
 
     if (chartData.length === 0) return;
 
-    const perFieldMax = getPerFieldMaxMapNormalized(active);
+    const perField = getPerFieldRanks(active);
+    const noun = currentTab === 'universities' ? 'schools' : 'companies';
 
     const chartRow = document.createElement('tr');
     chartRow.classList.add('chart-stats-row');
 
     let chartHTML = '<td colspan="3"><div class="chart-stats-container">';
-    chartHTML += '<h4>Field Statistics</h4>';
+    chartHTML += '<h4>Field breakdown</h4>';
+    const one = currentTab === 'universities' ? 'school' : 'company';
+    chartHTML += `<p class="chart-caption">Bar: share of this ${one}'s total impact score. `
+        + `Rank: position among all ${noun} with impact in that field, under the current filters.</p>`;
     chartHTML += '<div class="chart-bars">';
 
     chartData.forEach(item => {
-        const cap = perFieldMax[item.field] || 1;
-        const pct = Math.min(100, (item.score / cap) * 100);
+        const pct = Math.round(item.share * 1000) / 10;
+        const info = perField[item.field] || { ranks: new Map(), count: 0 };
+        const rank = info.ranks.get(entity.name);
         chartHTML += `
             <div class="chart-bar-item">
               <div class="chart-bar-label">${escapeHtml(getFieldDisplayName(item.field))}</div>
               <div class="chart-bar-container">
-                <div class="chart-bar" style="width:${pct}%"></div>
-                <div class="chart-bar-value">${item.score.toFixed(2)}</div>
+                <div class="chart-bar" style="width:${Math.min(100, item.share * 100)}%"></div>
+                <div class="chart-bar-share">${pct}%</div>
               </div>
+              <div class="chart-bar-value" title="field impact score">${item.score.toFixed(2)}</div>
+              <div class="chart-bar-rank" title="rank in this field">${rank ? `#${rank.toLocaleString()} of ${info.count.toLocaleString()}` : '—'}</div>
             </div>
         `;
     });

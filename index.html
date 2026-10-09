@@ -15,6 +15,7 @@
             <div class="header-main">
                 <h1><i class="fas fa-chart-line"></i> Research Impact Rankings</h1>
                 <p class="header-subtitle">Metrics-based ranking of computer science institutions</p>
+                <p class="header-stamp" id="dataStamp" aria-live="polite"></p>
             </div>
             <div class="header-actions">
                 <a href="https://github.com/AI-Research-Impact-Ranking/ImpactRankings" class="github-link" target="_blank" rel="noopener noreferrer">
@@ -63,6 +64,36 @@
         <div class="content">
             <div class="filter-sidebar">
                 <div class="filter-section">
+                    <h3><i class="fas fa-calendar-alt"></i> Conference Years</h3>
+
+                    <div class="filter-group">
+                        <div class="year-range">
+                            <select id="yearFrom" class="filter-select" aria-label="From year"></select>
+                            <span class="year-range-separator">to</span>
+                            <select id="yearTo" class="filter-select" aria-label="To year"></select>
+                        </div>
+                        <p class="filter-hint">Counts only the papers published at the selected conferences in these years.</p>
+                    </div>
+                </div>
+                <div class="filter-section">
+                    <h3><i class="fas fa-microscope"></i> Research Fields</h3>
+                    
+                    <div class="filter-group">
+                        <div class="filter-header">
+                            <label class="filter-label">
+                                <i class="fas fa-list"></i> Fields
+                            </label>
+                            <button id="toggleAllFields" class="toggle-button-small" onclick="toggleAllFields()">
+                                All
+                            </button>
+                        </div>
+                        <div class="field-checkboxes" id="fieldCheckboxContainer">
+                            <!-- Checkboxes will be dynamically generated here -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="filter-section">
                     <h3><i class="fas fa-globe"></i> Geographic Filters</h3>
                     
                     <div class="filter-group">
@@ -90,36 +121,6 @@
                     </div>
                 </div>
 
-                <div class="filter-section">
-                    <h3><i class="fas fa-microscope"></i> Research Fields</h3>
-                    
-                    <div class="filter-group">
-                        <div class="filter-header">
-                            <label class="filter-label">
-                                <i class="fas fa-list"></i> Fields
-                            </label>
-                            <button id="toggleAllFields" class="toggle-button-small" onclick="toggleAllFields()">
-                                All
-                            </button>
-                        </div>
-                        <div class="field-checkboxes" id="fieldCheckboxContainer">
-                            <!-- Checkboxes will be dynamically generated here -->
-                        </div>
-                    </div>
-                </div>
-
-                <div class="filter-section">
-                    <h3><i class="fas fa-calendar-alt"></i> Conference Years</h3>
-
-                    <div class="filter-group">
-                        <div class="year-range">
-                            <select id="yearFrom" class="filter-select" aria-label="From year"></select>
-                            <span class="year-range-separator">to</span>
-                            <select id="yearTo" class="filter-select" aria-label="To year"></select>
-                        </div>
-                        <p class="filter-hint">Counts only the papers published at the selected conferences in these years.</p>
-                    </div>
-                </div>
             </div>
 
             <div class="results-container">
@@ -160,7 +161,7 @@
                             <tr>
                                 <th class="rank-col">Rank</th>
                                 <th class="institution-col" id="institutionHeader">Institution</th>
-                                <th class="score-col">Impact Score</th>
+                                <th class="score-col">Impact Score <i class="fas fa-info-circle score-info" title="Sum of the five field scores; each field is scaled to total 500 across the tab."></i></th>
                             </tr>
                         </thead>
                         <tbody>
